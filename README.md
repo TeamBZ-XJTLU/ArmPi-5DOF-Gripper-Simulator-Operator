@@ -17,7 +17,7 @@ The existing `RobotArm.md` file documents joint roles, link lengths, and base ge
 ### Requirements
 
 - Python ≥ 3.13
-- Dependencies listed in `pyproject.toml` (install via `uv pip install -r pyproject.toml` or `pip install -e .`)
+- Dependencies listed in `pyproject.toml` (install via `uv sync`)
 - Optional hardware:
   - `ros_robot_controller_sdk` (provided in this repo as `ros_robot_controller_sdk.py`)
   - A compatible controller board connected to the host
