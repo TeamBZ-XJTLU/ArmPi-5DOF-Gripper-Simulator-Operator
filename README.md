@@ -66,7 +66,7 @@ Start with `python arm_control.py`. Commands include:
 | `hardware on [speed]` / `hardware off` | Attach/detach the board (speed ∈ 0–1). |
 | `joints`, `fk`, `help`, `quit` | Introspection or exit. |
 
-Both IK paths (line/circle) are implemented in `RobotArm` to support reuse in scripts/tests.
+Under the hood the CLI keeps a single `RobotArm` instance alive for the whole session. Restricted-zone and horizontal-gripper modes start enabled, but you can flip them at any time via the `restrict` / `horizontal` commands; the new state takes effect immediately for every subsequent move. When you attach hardware the same object begins streaming servo updates (still in J6→J1 order) and all subsequent commands operate on the real arm. Because everything routes through `RobotArm`, the CLI gets the same IK scoring, motion primitives, and safety checks that the Streamlit UI uses.
 
 ---
 
