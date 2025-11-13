@@ -17,8 +17,13 @@ st.set_page_config(
 # Initialize robot arm in session state
 if 'arm' not in st.session_state:
     st.session_state.arm = RobotArm()
+if 'ik_status' not in st.session_state:
+    st.session_state.ik_status = None
+if 'restricted_zone' not in st.session_state:
+    st.session_state.restricted_zone = True
 
 arm = st.session_state.arm
+arm.set_restricted_zone(st.session_state.restricted_zone)
 
 # Title and description
 st.title("🦾 5DOF+Gripper Robot Arm Simulator")
@@ -49,6 +54,64 @@ if st.sidebar.button("Reset to Neutral", width="stretch"):
 
 # Update arm with slider values
 arm.set_all_joints(j1, j2, j3, j4, j5, j6)
+current_x, current_y, current_z = arm.forward_kinematics()
+
+st.sidebar.divider()
+st.sidebar.header("Cartesian IK Target")
+restricted_toggle = st.sidebar.checkbox(
+    "Enforce Restricted Zone (safe workspace)",
+    value=st.session_state.restricted_zone,
+    help="Prevents the arm from dipping below ground or intersecting the base platform."
+)
+if restricted_toggle != st.session_state.restricted_zone:
+    st.session_state.restricted_zone = restricted_toggle
+    arm.set_restricted_zone(restricted_toggle)
+    st.rerun()
+if st.session_state.ik_status:
+    status = st.session_state.ik_status
+    status_renderers = {
+        'success': st.sidebar.success,
+        'error': st.sidebar.error,
+        'info': st.sidebar.info,
+        'warning': st.sidebar.warning,
+    }
+    renderer = status_renderers.get(status.get('type'), st.sidebar.info)
+    renderer(status.get('message', ''))
+    if status.get('servos'):
+        st.sidebar.caption("Last IK servo targets")
+        st.sidebar.json(status['servos'])
+    if st.sidebar.button("Clear IK Status", use_container_width=True):
+        st.session_state.ik_status = None
+        st.rerun()
+
+ik_target_x = st.sidebar.number_input(
+    "Target X (mm)", min_value=-400.0, max_value=400.0,
+    value=float(current_x), step=5.0
+)
+ik_target_y = st.sidebar.number_input(
+    "Target Y (mm)", min_value=-400.0, max_value=400.0,
+    value=float(current_y), step=5.0
+)
+ik_target_z = st.sidebar.number_input(
+    "Target Z (mm)", min_value=0.0, max_value=500.0,
+    value=float(current_z), step=5.0
+)
+if st.sidebar.button("Solve via IK", use_container_width=True):
+    result = arm.inverse_kinematics(ik_target_x, ik_target_y, ik_target_z, apply=True)
+    if result:
+        best = result['best']
+        st.session_state.ik_status = {
+            'type': 'success',
+            'message': f"IK applied to ({ik_target_x:.1f}, {ik_target_y:.1f}, {ik_target_z:.1f}) mm.",
+            'servos': best['servos'],
+            'solutions': len(result['solutions']),
+        }
+    else:
+        st.session_state.ik_status = {
+            'type': 'error',
+            'message': "Target unreachable with current joint limits.",
+        }
+    st.rerun()
 
 # Main content area with two columns
 col1, col2 = st.columns([2, 1])
@@ -124,6 +187,39 @@ with col1:
         name='Base Platform',
         showlegend=True
     ))
+
+    if st.session_state.restricted_zone:
+        # Draw restricted base volume (no-go zone)
+        y0 = -arm.base_j5j6_offset
+        y1 = arm.base_length - arm.base_j5j6_offset
+        z0 = 0.0
+        z1 = arm.links.base_height
+        x0 = -arm.base_width / 2
+        x1 = arm.base_width / 2
+        box_vertices = np.array([
+            [x0, y0, z0], [x1, y0, z0], [x1, y1, z0], [x0, y1, z0],
+            [x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1]
+        ])
+        faces = np.array([
+            [0, 1, 2], [0, 2, 3],  # bottom
+            [4, 5, 6], [4, 6, 7],  # top
+            [0, 1, 5], [0, 5, 4],  # side
+            [1, 2, 6], [1, 6, 5],
+            [2, 3, 7], [2, 7, 6],
+            [3, 0, 4], [3, 4, 7],
+        ])
+        fig.add_trace(go.Mesh3d(
+            x=box_vertices[:, 0],
+            y=box_vertices[:, 1],
+            z=box_vertices[:, 2],
+            i=faces[:, 0],
+            j=faces[:, 1],
+            k=faces[:, 2],
+            color='rgba(255,0,0,0.2)',
+            opacity=0.35,
+            name='Restricted Zone',
+            showscale=False
+        ))
     
     # Draw arm links
     fig.add_trace(go.Scatter3d(
@@ -280,7 +376,7 @@ with col2:
     
     # End-effector position
     st.markdown("#### End-Effector Position")
-    x, y, z = arm.forward_kinematics()
+    x, y, z = current_x, current_y, current_z
     st.metric("X", f"{x:.1f} mm")
     st.metric("Y", f"{y:.1f} mm")
     st.metric("Z", f"{z:.1f} mm")
