@@ -28,7 +28,7 @@ The existing `RobotArm.md` file documents joint roles, link lengths, and base ge
 
 ```bash
 # Install dependencies
-uv pip install -r pyproject.toml
+uv sync
 
 # (Optional) launch the Streamlit UI
 streamlit run streamlit_arm.py
