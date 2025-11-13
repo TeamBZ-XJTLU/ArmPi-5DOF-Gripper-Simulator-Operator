@@ -32,6 +32,7 @@ uv sync
 
 # (Optional) launch the Streamlit UI
 streamlit run streamlit_arm.py
+# Or visit the hosted demo at https://armpi-5dof-gripper-simulator.streamlit.app
 
 # Or use the CLI controller
 python arm_control.py
