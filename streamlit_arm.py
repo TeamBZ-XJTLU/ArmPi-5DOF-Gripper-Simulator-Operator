@@ -21,9 +21,12 @@ if 'ik_status' not in st.session_state:
     st.session_state.ik_status = None
 if 'restricted_zone' not in st.session_state:
     st.session_state.restricted_zone = True
+if 'keep_gripper_horizontal' not in st.session_state:
+    st.session_state.keep_gripper_horizontal = False
 
 arm = st.session_state.arm
 arm.set_restricted_zone(st.session_state.restricted_zone)
+arm.set_gripper_horizontal_mode(st.session_state.keep_gripper_horizontal)
 
 # Title and description
 st.title("🦾 5DOF+Gripper Robot Arm Simulator")
@@ -66,6 +69,15 @@ restricted_toggle = st.sidebar.checkbox(
 if restricted_toggle != st.session_state.restricted_zone:
     st.session_state.restricted_zone = restricted_toggle
     arm.set_restricted_zone(restricted_toggle)
+    st.rerun()
+horizontal_toggle = st.sidebar.checkbox(
+    "Keep Gripper Horizontal",
+    value=st.session_state.keep_gripper_horizontal,
+    help="Forces IK to keep the gripper parallel to the ground."
+)
+if horizontal_toggle != st.session_state.keep_gripper_horizontal:
+    st.session_state.keep_gripper_horizontal = horizontal_toggle
+    arm.set_gripper_horizontal_mode(horizontal_toggle)
     st.rerun()
 if st.session_state.ik_status:
     status = st.session_state.ik_status

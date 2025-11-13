@@ -4,8 +4,9 @@ This module provides a class to represent and control a 5-degree-of-freedom
 robot arm with a gripper end-effector.
 """
 
+import time
 import numpy as np
-from typing import Dict, Tuple, Optional, List
+from typing import Dict, Tuple, Optional, List, Any
 from dataclasses import dataclass
 
 
@@ -69,6 +70,27 @@ class RobotArm:
         
         # Workspace constraints
         self.restricted_zone_enabled = True
+        self.keep_gripper_horizontal = False
+        
+        # Hardware integration
+        self.hardware_board: Optional[Any] = None
+        self.hardware_enabled = False
+        self.hardware_speed = 0.5
+        self.Board = None
+        self.BOARD_AVAILABLE = False
+        self._setup_board_class()
+
+    def _setup_board_class(self):
+        """Lazy import the hardware Board SDK if available."""
+        if self.Board is not None:
+            return
+        try:
+            from ros_robot_controller_sdk import Board  # type: ignore
+            self.Board = Board
+            self.BOARD_AVAILABLE = True
+        except Exception:
+            self.Board = None
+            self.BOARD_AVAILABLE = False
         
     def set_joint(self, joint_name: str, value: int) -> bool:
         """
@@ -90,7 +112,57 @@ class RobotArm:
             return False
             
         self.joints[joint_name] = value
+        self._sync_hardware(targets=[joint_name])
         return True
+    
+    def attach_hardware(self, board: Any = None, speed: float = 0.5, auto_initialize: bool = True):
+        """
+        Attach a hardware board for real-servo control.
+        
+        Args:
+            board: Instance compatible with ros_robot_controller_sdk.Board.
+            speed: Movement speed parameter passed to the SDK (0-1).
+            auto_initialize: When True, call servo_control.init_servo_positions.
+        """
+        self._setup_board_class()
+        if not self.BOARD_AVAILABLE and board is None:
+            print("Board SDK not available; cannot attach hardware.")
+            return False
+        
+        if board is None:
+            board = self.Board()
+        
+        self.hardware_board = board
+        self.hardware_speed = float(speed)
+        self.hardware_enabled = True
+        
+        if auto_initialize:
+            self._init_servo_positions()
+        else:
+            self._sync_hardware()
+        return True
+    
+    def detach_hardware(self):
+        """Detach any connected hardware board."""
+        self.hardware_board = None
+        self.hardware_enabled = False
+    
+    def _sync_hardware(self, targets: Optional[List[str]] = None):
+        """
+        Push the current joint positions to the hardware when enabled.
+        """
+        if not (self.hardware_enabled and self.hardware_board):
+            return
+        
+        joint_order = ['J6', 'J5', 'J4', 'J3', 'J2', 'J1']
+        if targets is None:
+            selected = joint_order
+        else:
+            selected = [name for name in joint_order if name in targets]
+        for joint_name in selected:
+            servo_id = int(joint_name[1])
+            value = self.joints[joint_name]
+            self._set_servo_position(servo=servo_id, position=value)
     
     def get_joint(self, joint_name: str) -> Optional[int]:
         """
@@ -126,6 +198,7 @@ class RobotArm:
         # Set all joints
         for name, value in zip(joint_names, values):
             self.joints[name] = value
+        self._sync_hardware()
         
         return True
     
@@ -133,6 +206,7 @@ class RobotArm:
         """Reset all joints to neutral position (500)."""
         for joint in self.joints:
             self.joints[joint] = self.limits.neutral
+        self._sync_hardware()
     
     def servo_to_radians(self, servo_value: int, joint_name: str) -> float:
         """
@@ -236,6 +310,10 @@ class RobotArm:
     def set_restricted_zone(self, enabled: bool):
         """Enable or disable avoidance of the base volume and negative heights."""
         self.restricted_zone_enabled = bool(enabled)
+    
+    def set_gripper_horizontal_mode(self, enabled: bool):
+        """Force the gripper to stay parallel to the ground when enabled."""
+        self.keep_gripper_horizontal = bool(enabled)
 
     def _joint_positions(self, angles: Dict[str, float]) -> List[np.ndarray]:
         """
@@ -297,6 +375,8 @@ class RobotArm:
         for pos in positions[1:]:
             if pos[2] < -1e-6:
                 return True
+            if pos[1] > 1e-6:
+                return True
             if self._is_inside_base_volume(pos):
                 return True
         return False
@@ -324,9 +404,18 @@ class RobotArm:
             0.0,
         ]
 
-        # Add a dense sweep across the circle to avoid missing feasible orientations
-        for extra in np.linspace(-np.pi, np.pi, num=360, endpoint=False):
-            seed_angles.append(extra)
+        if self.keep_gripper_horizontal:
+            # Prioritize horizontal orientations (±90°) with small offsets
+            offsets = [0.0, np.deg2rad(5), -np.deg2rad(5), np.deg2rad(10), -np.deg2rad(10)]
+            horizontal_targets = [np.pi / 2, -np.pi / 2]
+            seed_angles = []
+            for base_angle in horizontal_targets:
+                for offset in offsets:
+                    seed_angles.append(base_angle + offset)
+        else:
+            # Add a dense sweep across the circle to avoid missing feasible orientations
+            for extra in np.linspace(-np.pi, np.pi, num=360, endpoint=False):
+                seed_angles.append(extra)
 
         for angle in seed_angles:
             normalized = self._normalize_angle(angle)
@@ -486,6 +575,31 @@ class RobotArm:
             'best': best,
             'solutions': solutions,
         }
+
+    def move_end_effector_line(self, start: Tuple[float, float, float], end: Tuple[float, float, float], steps: int = 20) -> bool:
+        """
+        Move the end-effector in a straight line between two points.
+
+        Args:
+            start: (x, y, z) coordinates of the starting waypoint.
+            end: (x, y, z) coordinates of the ending waypoint.
+            steps: Number of waypoints along the line (>=2).
+        """
+        if steps < 2:
+            raise ValueError("steps must be >= 2 for line motion.")
+
+        sx, sy, sz = start
+        ex, ey, ez = end
+        ts = np.linspace(0.0, 1.0, steps)
+        for t in ts:
+            px = sx + (ex - sx) * t
+            py = sy + (ey - sy) * t
+            pz = sz + (ez - sz) * t
+            result = self.inverse_kinematics(px, py, pz, apply=True)
+            if not result:
+                print(f"Line motion aborted at t={t:.2f}.")
+                return False
+        return True
     
     def get_gripper_state(self) -> str:
         """
@@ -556,6 +670,41 @@ class RobotArm:
         """Machine-readable representation."""
         joint_vals = ", ".join(f"{k}={v}" for k, v in self.joints.items())
         return f"RobotArm({joint_vals})"
+    
+
+    def _init_servo_positions(self):
+        """
+        Initialize servos to default positions using the attached board.
+        """
+        if not (self.hardware_enabled and self.hardware_board):
+            return
+        default_positions = [
+            [6, 500],
+            [5, 500],
+            [4, 500],
+            [3, 120],
+            [2, 500],
+            [1, 500],
+        ]
+        for servo, position in default_positions:
+            self._set_servo_position(servo=servo, position=position)
+            time.sleep(0.5)
+
+    def _set_servo_position(self, servo: int, position: int):
+        """
+        Set a single servo position through the hardware board.
+        """
+        if not (self.hardware_enabled and self.hardware_board):
+            return
+        try:
+            self.hardware_board.bus_servo_set_position(
+                self.hardware_speed,
+                [[int(servo), int(position)]]
+            )
+            time.sleep(0.02)
+        except Exception as exc:
+            print(f"Hardware write error (servo {servo}): {exc}")
+
 
 
 if __name__ == "__main__":
